@@ -37,6 +37,10 @@ Layout:
     the only existing record is one WIFICANARY itself created on a prior
     run (self-escalation guard), and the motor/reason rewrite when it's a
     real pre-existing device from another source plugin.
+  - scan(): `iw` runs under `sudo timeout -s KILL`, RUN_TIMEOUT minus a
+    margin (10 s floor), so a stuck scan can't outlive a killed run; a
+    timeout (exit 124/137/-9, or the subprocess's own) and a failed scan both
+    yield no APs instead of raising.
   - main(): integration test with scan() mocked - covers the no-IFACE
     early-return and a run that finds one anomaly end to end.
 """
@@ -694,6 +698,65 @@ def test_escalation_with_no_detections_does_not_query():
         MockDeviceInstance.return_value.getAllByMacs.return_value = {}
         wificanary.escalate_known_devices([])
     MockDeviceInstance.return_value.getAllByMacs.assert_called_once_with([])
+
+
+# ---------------------------------------------------------------------------
+# scan()
+# ---------------------------------------------------------------------------
+
+def _completed(returncode=0, stdout='', stderr=''):
+    return MagicMock(returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+def test_scan_bounds_iw_inside_sudo():
+    with patch.object(wificanary.subprocess, 'run', return_value=_completed()) as run:
+        wificanary.scan('wlan0', 60)
+
+    cmd = run.call_args.args[0]
+    assert cmd == ['sudo', 'timeout', '-s', 'KILL', '45', 'iw', 'dev', 'wlan0', 'scan']
+    # The subprocess's own limit stays above timeout(1)'s, so timeout(1) fires first
+    assert run.call_args.kwargs['timeout'] == 50
+
+
+def test_scan_timeout_has_a_floor():
+    with patch.object(wificanary.subprocess, 'run', return_value=_completed()) as run:
+        wificanary.scan('wlan0', 12)
+
+    assert run.call_args.args[0][4] == '10'
+
+
+@pytest.mark.parametrize('returncode', [124, 137, -9])
+def test_scan_timeout_exit_returns_no_aps(returncode):
+    with patch.object(wificanary.subprocess, 'run', return_value=_completed(returncode)):
+        with patch.object(wificanary, 'mylog') as log:
+            assert wificanary.scan('wlan0', 60) == []
+
+    assert 'timed out after 45s' in str(log.call_args)
+
+
+def test_scan_subprocess_timeout_returns_no_aps():
+    expired = wificanary.subprocess.TimeoutExpired(cmd='iw', timeout=50)
+    with patch.object(wificanary.subprocess, 'run', side_effect=expired):
+        assert wificanary.scan('wlan0', 60) == []
+
+
+def test_scan_failure_returns_no_aps():
+    failed = _completed(1, stderr='command failed: Device or resource busy (-16)')
+    with patch.object(wificanary.subprocess, 'run', return_value=failed):
+        assert wificanary.scan('wlan0', 60) == []
+
+
+def test_scan_success_is_parsed():
+    output = (
+        'BSS aa:bb:cc:11:22:33(on wlan0)\n'
+        '\tsignal: -48.00 dBm\n'
+        '\tSSID: HomeWiFi\n'
+        '\tRSN:\t * Version: 1\n'
+    )
+    with patch.object(wificanary.subprocess, 'run', return_value=_completed(0, output)):
+        aps = wificanary.scan('wlan0', 60)
+
+    assert [(ap['bssid'], ap['ssid'], ap['security']) for ap in aps] == [('aa:bb:cc:11:22:33', 'HomeWiFi', 'wpa2')]
 
 
 # ---------------------------------------------------------------------------
