@@ -19,7 +19,7 @@ from helper import (
     getBuildTimeStampAndVersion,
 )
 from messaging.notification_sections import SECTION_ORDER
-from utils.datetime_utils import timeNowUTC, timeNowTZ, get_timezone_offset
+from utils.datetime_utils import timeNowUTC, timeNowTZ
 
 
 # -----------------------------------------------------------------------------
@@ -232,8 +232,10 @@ class NotificationInstance:
 
         self.save()
 
-    # Clear the Pending Email flag from all events and devices
     def clearPendingEmailFlag(self):
+        """Clear evePendingAlertEmail on reported Events and stamp
+        devLastNotification on their devices; 'Device Down' events are only
+        cleared once NTFPRCS_alert_down_time minutes have passed."""
 
         # Clean Pending Alert Events
         self.db.sql.execute("""
@@ -249,18 +251,20 @@ class NotificationInstance:
                 WHERE evePendingAlertEmail = 1
                 AND eveEventType !='Device Down' """)
 
-        # Clear down events flag after the reporting window passed
-        minutes = int(get_setting_value("NTFPRCS_alert_down_time") or 0)
-        tz_offset = get_timezone_offset()
+        # Clear down events flag using the exact UTC cutoff the down_devices
+        # selection query used (conf.down_alert_cutoff, set by
+        # get_notifications()), so an event that crossed the threshold after
+        # selection isn't cleared without ever being reported. eveDateTime is
+        # always UTC - applying a timezone offset here would desync the two (#1851).
         self.db.sql.execute(
             """
             UPDATE Events
             SET evePendingAlertEmail = 0
             WHERE evePendingAlertEmail = 1
                 AND eveEventType = 'Device Down'
-                AND eveDateTime < datetime('now', ?, ?)
+                AND eveDateTime < ?
                 """,
-            (f"-{minutes} minutes", tz_offset),
+            (conf.down_alert_cutoff,),
         )
 
         mylog("minimal", ["[Notification] Notifications changes: ", self.db.sql.rowcount])

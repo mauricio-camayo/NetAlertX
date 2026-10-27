@@ -171,6 +171,20 @@ class TestLoadWorkflowsRejectsInvalidTokens(unittest.TestCase):
         mgr = self._make_manager_loading([wf])
         self.assertEqual(len(mgr.workflows), 0)
 
+    def test_non_list_content_ignored(self):
+        for raw in (123, "text", {"name": "x"}, None):
+            mgr = self._make_manager_loading(raw)
+            self.assertEqual(mgr.workflows, [])
+
+    def test_non_object_entries_skipped(self):
+        wf = {
+            "name": "Valid WF", "enabled": "Yes",
+            "trigger": {"object_type": "Devices", "event_type": "update"},
+            "conditions": [], "actions": []
+        }
+        mgr = self._make_manager_loading([1, "x", None, wf])
+        self.assertEqual(len(mgr.workflows), 1)
+
 
 # ---------------------------------------------------------------------------
 # DeviceInstance.queryByConditions
