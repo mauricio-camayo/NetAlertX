@@ -99,6 +99,19 @@ def apply_timezone(data, fields):
 # ===============================================================================
 # REPORTING
 # ===============================================================================
+MAX_ALERT_DOWN_MINUTES = 100 * 365 * 24 * 60
+
+
+def get_alert_down_minutes():
+    """Return NTFPRCS_alert_down_time as whole minutes clamped to
+    0..MAX_ALERT_DOWN_MINUTES; a non-numeric value counts as 0."""
+    try:
+        minutes = int(get_setting_value("NTFPRCS_alert_down_time") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(minutes, MAX_ALERT_DOWN_MINUTES))
+
+
 def get_notifications(db):
     """
     Fetch notifications for all configured sections.
@@ -129,7 +142,7 @@ def get_notifications(db):
 
     # Computed once and shared with NotificationInstance.clearPendingEmailFlag()
     # via conf, so the clear step acts on exactly the events selected here.
-    alert_down_minutes = int(get_setting_value("NTFPRCS_alert_down_time") or 0)
+    alert_down_minutes = get_alert_down_minutes()
     alert_down_cutoff = (
         timeNowUTC(as_string=False) - timedelta(minutes=alert_down_minutes)
     ).strftime(DATETIME_PATTERN)
