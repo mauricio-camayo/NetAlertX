@@ -275,5 +275,45 @@ class TestClearPendingEmailFlagSelectionCutoff(unittest.TestCase):
         self.assertLessEqual(cutoff_dt, after - timedelta(minutes=5))
 
 
+class TestAlertDownTimeBounds(unittest.TestCase):
+    """An out-of-range NTFPRCS_alert_down_time must never raise out of
+    get_notifications() (it runs inside the main monitoring loop)."""
+
+    def _run_get_notifications(self, raw_minutes):
+        """Run get_notifications() with the given raw setting value and return
+        the recorded cutoff as a UTC datetime, restoring conf afterward."""
+        mock_db = Mock()
+        mock_json_obj = Mock()
+        mock_json_obj.columnNames = []
+        mock_json_obj.json = {"data": []}
+        mock_db.get_table_as_json.return_value = mock_json_obj
+        settings = {
+            "NTFPRCS_INCLUDED_SECTIONS": ["down_devices"],
+            "NTFPRCS_alert_down_time": raw_minutes,
+        }
+        original_cutoff = conf.down_alert_cutoff
+        try:
+            with patch(
+                "messaging.reporting.get_setting_value",
+                side_effect=lambda key: settings.get(key, ""),
+            ):
+                get_notifications(mock_db)
+            cutoff = conf.down_alert_cutoff
+        finally:
+            conf.down_alert_cutoff = original_cutoff
+        return datetime.strptime(cutoff, DATETIME_PATTERN).replace(tzinfo=timezone.utc)
+
+    def test_huge_value_does_not_raise(self):
+        """A value too large for timedelta/datetime must be bounded, not raise
+        OverflowError."""
+        cutoff = self._run_get_notifications("999999999999999")
+        self.assertLess(cutoff, timeNowUTC(as_string=False))
+
+    def test_negative_value_does_not_produce_future_cutoff(self):
+        """A negative window must not push the cutoff into the future."""
+        cutoff = self._run_get_notifications("-5")
+        self.assertLessEqual(cutoff, timeNowUTC(as_string=False))
+
+
 if __name__ == "__main__":
     unittest.main()
