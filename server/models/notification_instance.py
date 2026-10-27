@@ -251,20 +251,20 @@ class NotificationInstance:
                 WHERE evePendingAlertEmail = 1
                 AND eveEventType !='Device Down' """)
 
-        # Clear down events flag after the reporting window passed. eveDateTime
-        # is always UTC (timeNowUTC()), matching the down_devices selection
-        # query's own UTC-only cutoff in notification_sections.py - applying a
-        # timezone offset here would desync the two (#1851).
-        minutes = int(get_setting_value("NTFPRCS_alert_down_time") or 0)
+        # Clear down events flag using the exact UTC cutoff the down_devices
+        # selection query used (conf.down_alert_cutoff, set by
+        # get_notifications()), so an event that crossed the threshold after
+        # selection isn't cleared without ever being reported. eveDateTime is
+        # always UTC - applying a timezone offset here would desync the two (#1851).
         self.db.sql.execute(
             """
             UPDATE Events
             SET evePendingAlertEmail = 0
             WHERE evePendingAlertEmail = 1
                 AND eveEventType = 'Device Down'
-                AND eveDateTime < datetime('now', ?)
+                AND eveDateTime < ?
                 """,
-            (f"-{minutes} minutes",),
+            (conf.down_alert_cutoff,),
         )
 
         mylog("minimal", ["[Notification] Notifications changes: ", self.db.sql.rowcount])

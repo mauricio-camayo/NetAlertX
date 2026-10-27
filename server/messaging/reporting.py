@@ -13,6 +13,7 @@
 import os
 import json
 import sys
+from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 # Register NetAlertX directories
@@ -24,7 +25,7 @@ from helper import (  # noqa: E402 [flake8 lint suppression]
 )
 from logger import mylog  # noqa: E402 [flake8 lint suppression]
 from db.sql_safe_builder import create_safe_condition_builder  # noqa: E402 [flake8 lint suppression]
-from utils.datetime_utils import format_date_iso  # noqa: E402 [flake8 lint suppression]
+from utils.datetime_utils import format_date_iso, timeNowUTC, DATETIME_PATTERN  # noqa: E402 [flake8 lint suppression]
 from messaging.notification_sections import (  # noqa: E402 [flake8 lint suppression]
     SECTION_ORDER,
     SECTION_TITLES,
@@ -126,7 +127,13 @@ def get_notifications(db):
           AND eveMac IN (SELECT devMac FROM Devices WHERE devAlertDown = 0)
     """)
 
+    # Computed once and shared with NotificationInstance.clearPendingEmailFlag()
+    # via conf, so the clear step acts on exactly the events selected here.
     alert_down_minutes = int(get_setting_value("NTFPRCS_alert_down_time") or 0)
+    alert_down_cutoff = (
+        timeNowUTC(as_string=False) - timedelta(minutes=alert_down_minutes)
+    ).strftime(DATETIME_PATTERN)
+    conf.down_alert_cutoff = alert_down_cutoff
 
     sections = get_setting_value("NTFPRCS_INCLUDED_SECTIONS") or []
     mylog("verbose", ["[Notification] Included sections: ", sections])
@@ -158,7 +165,7 @@ def get_notifications(db):
         return ""
 
     # SQL templates with placeholders for runtime values
-    # {condition} and {alert_down_minutes} are formatted at query time
+    # {condition} and {alert_down_cutoff} are formatted at query time
 
     # Initialize final structure
     final_json = {}
@@ -197,7 +204,7 @@ def get_notifications(db):
             # Format template with runtime placeholders
             format_vars = {"condition": safe_condition}
             if section == "down_devices":
-                format_vars["alert_down_minutes"] = alert_down_minutes
+                format_vars["alert_down_cutoff"] = alert_down_cutoff
             if section == "events":
                 # 'Down Reconnected' has its own dedicated section; exclude it
                 # from events when that section is also active to prevent the
@@ -212,7 +219,7 @@ def get_notifications(db):
             mylog("verbose", [f"[Notification] Error building condition for {section}: ", e])
             fallback_vars = {"condition": ""}
             if section == "down_devices":
-                fallback_vars["alert_down_minutes"] = alert_down_minutes
+                fallback_vars["alert_down_cutoff"] = alert_down_cutoff
             if section == "events":
                 if "down_reconnected" in sections:
                     fallback_vars["event_types"] = "'Connected', 'Disconnected','IP Changed'"

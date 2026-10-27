@@ -19,7 +19,8 @@ import sys
 import os
 import types
 import unittest
-from unittest.mock import patch
+from datetime import datetime, timedelta, timezone
+from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -57,6 +58,9 @@ from models.notification_instance import NotificationInstance  # noqa: E402
 if _json2table_was_stubbed:
     sys.modules.pop("json2table", None)
 
+from messaging.reporting import get_notifications  # noqa: E402
+from utils.datetime_utils import timeNowUTC, DATETIME_PATTERN  # noqa: E402
+
 
 def _make_db():
     """make_db() plus Plugins_Events, which clearPendingEmailFlag() always
@@ -85,12 +89,20 @@ def _get_flag(conn, mac):
     return row[0] if row else None
 
 
-def _clear_with_tz(conn, alert_down_minutes, tz_name):
+def _clear_with_tz(conn, alert_down_minutes, tz_name, selection_cutoff=None):
     """Instantiate NotificationInstance without running its real __init__
     (which needs a live settings DB/Logger) and call clearPendingEmailFlag()
-    with conf.tz set to tz_name, restoring the previous conf.tz afterward."""
+    with conf.tz set to tz_name and conf.down_alert_cutoff set to
+    selection_cutoff (the cutoff get_notifications() would have recorded),
+    restoring both afterward. When selection_cutoff is None the cutoff is
+    derived from alert_down_minutes, as get_notifications() would have."""
     original_tz = getattr(conf, "tz", None)
+    had_cutoff = hasattr(conf, "down_alert_cutoff")
+    original_cutoff = getattr(conf, "down_alert_cutoff", None)
     conf.tz = ZoneInfo(tz_name) if tz_name else None
+    conf.down_alert_cutoff = (
+        selection_cutoff if selection_cutoff is not None else minutes_ago(alert_down_minutes)
+    )
     try:
         ni = NotificationInstance.__new__(NotificationInstance)
         ni.db = DummyDB(conn)
@@ -101,6 +113,10 @@ def _clear_with_tz(conn, alert_down_minutes, tz_name):
             ni.clearPendingEmailFlag()
     finally:
         conf.tz = original_tz
+        if had_cutoff:
+            conf.down_alert_cutoff = original_cutoff
+        else:
+            del conf.down_alert_cutoff
 
 
 class TestClearPendingEmailFlagTimezone(unittest.TestCase):
@@ -171,6 +187,92 @@ class TestClearPendingEmailFlagTimezone(unittest.TestCase):
             "1-minute-old Device Down event with a 5-minute cutoff must stay "
             "pending regardless of server timezone.",
         )
+
+
+class TestClearPendingEmailFlagSelectionCutoff(unittest.TestCase):
+    """The clear step must reuse the cutoff the down_devices selection query
+    used, not recompute eligibility against the current time: plugins run
+    between selection and clear, so an event can cross the threshold in that
+    gap and would otherwise be cleared without ever having been notified."""
+
+    def test_event_crossing_cutoff_after_selection_stays_pending(self):
+        """Selection ran with a 5-minute cutoff, when this 4-minute-old event
+        was not yet eligible. Recomputing from 'now' with a 3-minute window
+        stands in for the time that elapsed since selection: the event looks
+        eligible now, but was never selected so must stay pending."""
+        conn = _make_db()
+        mac = "aa:bb:cc:dd:ee:04"
+        insert_device(conn, mac, alert_down=1)
+        _insert_down_event(conn, mac, minutes_old=4)
+        conn.commit()
+
+        _clear_with_tz(
+            conn,
+            alert_down_minutes=3,
+            tz_name=None,
+            selection_cutoff=minutes_ago(5),
+        )
+
+        self.assertEqual(
+            _get_flag(conn, mac),
+            1,
+            "Event not eligible at selection time must not be cleared.",
+        )
+
+    def test_event_selected_before_cutoff_is_cleared(self):
+        """An event older than the selection-time cutoff was selected for the
+        alert, so it must be cleared."""
+        conn = _make_db()
+        mac = "aa:bb:cc:dd:ee:05"
+        insert_device(conn, mac, alert_down=1)
+        _insert_down_event(conn, mac, minutes_old=10)
+        conn.commit()
+
+        _clear_with_tz(
+            conn,
+            alert_down_minutes=60,
+            tz_name=None,
+            selection_cutoff=minutes_ago(5),
+        )
+
+        self.assertEqual(_get_flag(conn, mac), 0)
+
+    def test_get_notifications_records_cutoff_used_in_query(self):
+        """get_notifications() computes the cutoff once, records it on conf for
+        the clear step and embeds the same value in the down_devices query."""
+        mock_db = Mock()
+        mock_json_obj = Mock()
+        mock_json_obj.columnNames = []
+        mock_json_obj.json = {"data": []}
+        mock_db.get_table_as_json.return_value = mock_json_obj
+
+        settings = {
+            "NTFPRCS_INCLUDED_SECTIONS": ["down_devices"],
+            "NTFPRCS_alert_down_time": "5",
+        }
+        had_cutoff = hasattr(conf, "down_alert_cutoff")
+        original_cutoff = getattr(conf, "down_alert_cutoff", None)
+        try:
+            before = timeNowUTC(as_string=False)
+            with patch(
+                "messaging.reporting.get_setting_value",
+                side_effect=lambda key: settings.get(key, ""),
+            ):
+                get_notifications(mock_db)
+            after = timeNowUTC(as_string=False)
+
+            cutoff = conf.down_alert_cutoff
+            query = mock_db.get_table_as_json.call_args[0][0]
+        finally:
+            if had_cutoff:
+                conf.down_alert_cutoff = original_cutoff
+            elif hasattr(conf, "down_alert_cutoff"):
+                del conf.down_alert_cutoff
+
+        self.assertIn(f"'{cutoff}'", query)
+        cutoff_dt = datetime.strptime(cutoff, DATETIME_PATTERN).replace(tzinfo=timezone.utc)
+        self.assertGreaterEqual(cutoff_dt, before - timedelta(minutes=5))
+        self.assertLessEqual(cutoff_dt, after - timedelta(minutes=5))
 
 
 if __name__ == "__main__":

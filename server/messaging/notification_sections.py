@@ -41,7 +41,10 @@ DATETIME_FIELDS = {
 #
 # Placeholders:
 #   {condition}          — optional WHERE clause appended by condition builder
-#   {alert_down_minutes} — runtime value, only used by down_devices
+#   {alert_down_cutoff}  — UTC 'YYYY-MM-DD HH:MM:SS' cutoff computed once per
+#                          get_notifications() call (also stored in
+#                          conf.down_alert_cutoff for the clear step), only
+#                          used by down_devices
 #
 # Every section here reads through Events_Devices, which LEFT JOINs Devices
 # onto Events - a device's pending event survives deleting the device (Events
@@ -85,7 +88,7 @@ SQL_TEMPLATES = {
         FROM Events_Devices AS down_events
         WHERE evePendingAlertEmail = 1
           AND down_events.eveEventType = 'Device Down'
-          AND eveDateTime < datetime('now', '-{alert_down_minutes} minutes')
+          AND eveDateTime < '{alert_down_cutoff}'
           AND down_events.devMac IS NOT NULL
           AND NOT EXISTS (
               SELECT 1

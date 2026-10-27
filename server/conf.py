@@ -22,6 +22,7 @@ startTime = ""
 last_scan_run = ""
 last_version_check = ""
 arpscan_devices = []
+down_alert_cutoff = ""
 
 # ACTUAL CONFIGRATION ITEMS set to defaults
 

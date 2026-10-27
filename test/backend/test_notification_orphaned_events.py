@@ -81,7 +81,7 @@ class TestDownDevicesExcludesOrphanedEvent:
         _insert_event(conn, EXISTING_MAC, "Device Down", minutes_old=10)
         _insert_event(conn, DELETED_MAC, "Device Down", minutes_old=10)
 
-        rows = _run_template(conn, "down_devices", alert_down_minutes=0)
+        rows = _run_template(conn, "down_devices", alert_down_cutoff=now_utc())
         macs = {r["eveMac"] for r in rows}
 
         assert EXISTING_MAC in macs
