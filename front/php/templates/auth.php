@@ -1,5 +1,6 @@
 <?php
 if (session_status() == PHP_SESSION_NONE) {
+    session_set_cookie_params(['samesite' => 'Lax', 'httponly' => true]);
     session_start();
 }
 

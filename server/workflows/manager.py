@@ -52,7 +52,7 @@ class WorkflowManager:
     # -------------------------------------------------------------------------
     # Loading
     def load_workflows(self):
-        """Load workflows from workflows.json, rejecting any with invalid tokens."""
+        """Load workflows from workflows.json, skipping non-object entries and any with invalid tokens."""
         try:
             workflows_json_path = fullConfFolder + "/workflows.json"
             with open(workflows_json_path, "r") as f:
@@ -61,8 +61,15 @@ class WorkflowManager:
             mylog("none", ["[WF] Failed to load workflows.json"])
             return []
 
+        if not isinstance(raw, list):
+            mylog("none", ["[WF] workflows.json must contain a list of workflows - ignoring file"])
+            return []
+
         valid = []
         for wf in raw:
+            if not isinstance(wf, dict):
+                mylog("none", ["[WF] Skipping workflows.json entry that is not an object"])
+                continue
             if self._validate_workflow_tokens(wf):
                 valid.append(wf)
             else:
