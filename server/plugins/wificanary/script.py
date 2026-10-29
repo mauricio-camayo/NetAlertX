@@ -147,12 +147,16 @@ def scan(iface, run_timeout):
     Core kills this script once RUN_TIMEOUT is reached, but not its children:
     a scan stuck on a busy or wedged radio used to leave an orphaned
     `sudo iw` spinning at full CPU long after the run was gone. `timeout`
-    inside sudo bounds `iw` itself, finishing SCAN_MARGIN_S before core's
-    limit so this script still gets to log it."""
-    scan_timeout = max(10, int(run_timeout) - SCAN_MARGIN_S)
+    inside sudo bounds `iw` itself, finishing SCAN_MARGIN_S (at most half of
+    a short RUN_TIMEOUT) before core's limit so this script still gets to
+    log it."""
+    run_timeout = int(run_timeout)
+    margin = min(SCAN_MARGIN_S, run_timeout // 2)
+    scan_timeout = max(1, run_timeout - margin)
     cmd = ['sudo', 'timeout', '-s', 'KILL', str(scan_timeout), 'iw', 'dev', iface, 'scan']
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=scan_timeout + 5)
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                timeout=scan_timeout + min(5, margin // 2))
     except subprocess.TimeoutExpired:
         mylog('none', [f'[{pluginName}] scan on {iface} timed out after {scan_timeout}s'])
         return []
